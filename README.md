@@ -1,87 +1,87 @@
 # FlashCardApp
 
-App web per **ripassare le flashcard scritte nel vault Obsidian**. Le card restano nelle note del vault (unica fonte del contenuto): un backend Django le importa, le serve una alla volta all'app Flutter e registra le risposte ("Sapevo" / "Non sapevo"), con statistiche, sessioni salvate, ricerca testuale e semantica, e una chat con Claude che prepara mazzi di ripasso su misura.
+Web app for **reviewing flashcards stored in an Obsidian vault**. Cards remain in the vault notes—the single source of truth—while a Django backend imports them, serves them one at a time to the Flutter app, and records the answers ("Knew it" / "Didn't know it"). It also provides statistics, saved sessions, full-text and semantic search, and a Claude-powered chat that creates tailored review decks.
 
-Il progetto è anche una palestra di sistemi distribuiti: Postgres con replica asincrona, letture dalla replica con garanzie read-your-writes, Redis per cache e revoca dei token, un server MCP come servizio separato.
+The project also serves as a distributed-systems playground: PostgreSQL with asynchronous replication, replica reads with read-your-writes guarantees, Redis for caching and token revocation, and a standalone MCP server.
 
 ---
 
-## Indice
+## Table of contents
 
-1. [Cosa fa](#cosa-fa)
-2. [Componenti](#componenti)
+1. [Features](#features)
+2. [Components](#components)
 3. [System design](#system-design)
-4. [Requisiti](#requisiti)
-5. [Configurazione (`.env`)](#configurazione-env)
-6. [Avvio in locale](#avvio-in-locale)
-7. [Uso](#uso)
-8. [Server MCP e chat](#server-mcp-e-chat)
-9. [Replica Postgres](#replica-postgres)
-10. [Test](#test)
-11. [Build e deploy](#build-e-deploy) (con [deploy su VPS](#deploy-su-vps))
-12. [Riferimento API](#riferimento-api)
-13. [Glossario](#glossario)
+4. [Requirements](#requirements)
+5. [Configuration (`.env`)](#configuration-env)
+6. [Local setup](#local-setup)
+7. [Usage](#usage)
+8. [MCP server and chat](#mcp-server-and-chat)
+9. [PostgreSQL replication](#postgresql-replication)
+10. [Tests](#tests)
+11. [Build and deployment](#build-and-deployment) (including [VPS deployment](#vps-deployment))
+12. [API reference](#api-reference)
+13. [Glossary](#glossary)
 
 ---
 
-## Cosa fa
+## Features
 
-- **Import dal vault** — legge le note `Flashcard -> <titolo>.md` (da cartella locale o da un repo GitHub) e ne estrae le card in tre formati:
-  - `basic`: `Domanda::Risposta` su una riga;
-  - `multiline`: domanda, una riga con solo `?`, risposta fino alla prima riga vuota;
-  - `cloze`: una riga con lacune `==...==` (una card per lacuna).
+- **Vault import** — reads `Flashcard -> <title>.md` notes from a local directory or GitHub repository and extracts cards in three formats:
+  - `basic`: `Question::Answer` on a single line;
+  - `multiline`: a question, a line containing only `?`, then the answer up to the first blank line;
+  - `cloze`: a line containing `==...==` blanks (one card per blank).
   
-  Il mazzo viene dal tag del frontmatter `flashcards/<mazzo>` o `flashcards/<mazzo>/<sottomazzo>`. L'import è idempotente: crea, aggiorna, archivia (card sparite dal vault) e ripristina.
-- **Studio** — sceglie un mazzo, sottomazzo, nota o "Tutti"; il backend propone la prossima card (prima le mai viste, poi la vista meno di recente). Le risposte si possono annullare. A fine sessione si può salvarla.
-- **Mazzi provvisori** — elenchi di card scelti con filtri (note, modificate oggi, sbagliate di recente), validi fino a mezzanotte.
-- **Statistiche** — risposte di oggi, giorni consecutivi, andamento per mazzo.
-- **Ricerca** — testuale e semantica (embedding Voyage AI + pgvector: "consenso" trova le card su Raft).
-- **Segnalazioni** — marca una card da correggere nel vault.
-- **Chat di ripasso** — chat con Claude che, tramite i tool MCP, trova gli argomenti e propone un mazzo provvisorio da confermare. Gli stessi tool sono usabili da Claude Desktop.
+  The deck is determined by the `flashcards/<deck>` or `flashcards/<deck>/<subdeck>` frontmatter tag. Imports are idempotent: they create, update, archive cards removed from the vault, and restore cards that reappear.
+- **Study sessions** — choose a deck, subdeck, note, or "All". The backend selects the next card—unseen cards first, followed by the least recently viewed. Answers can be undone, and completed sessions can be saved.
+- **Temporary decks** — filtered card lists based on notes, cards modified today, or recently missed cards; valid until midnight.
+- **Statistics** — today's answers, study streaks, and progress by deck.
+- **Search** — full-text and semantic search using Voyage AI embeddings and pgvector; for example, "consensus" can find cards about Raft.
+- **Reports** — flag cards that need to be corrected in the vault.
+- **Review chat** — Claude uses MCP tools to find topics and propose a temporary review deck for confirmation. The same tools can be used from Claude Desktop.
 
-## Componenti
+## Components
 
-| Componente | Tecnologia | Cartella | Ruolo |
+| Component | Technology | Directory | Purpose |
 |---|---|---|---|
-| **App web** | Flutter (web), architettura Pine, BLoC/Cubit, auto_route | `flashcard/` | UI di studio, statistiche, ricerca, chat |
-| **Backend API** | Django 5.2 + DRF, gunicorn | `backend/` | API REST, import, autenticazione, admin |
-| **Server MCP** | SDK `mcp` (Streamable HTTP), stesso codice del backend | `backend/apps/assistant/mcp/` | Tool per creare mazzi provvisori da una chat |
-| **Postgres primary** | Postgres 17 + pgvector | `db/` | Dati e embedding, tutte le scritture |
-| **Postgres replica** | Replica fisica asincrona (streaming) | `db/replica-entrypoint.sh` | Letture GET dell'API |
-| **Redis** | Redis 7 | — | Denylist JWT, rate limit login, cache, marcatori LSN per la replica |
-| **Servizi esterni** | Claude API, Voyage AI, GitHub | — | Chat, embedding, vault remoto |
+| **Web app** | Flutter web, Pine architecture, BLoC/Cubit, auto_route | `flashcard/` | Study UI, statistics, search, and chat |
+| **API backend** | Django 5.2 + DRF, Gunicorn | `backend/` | REST API, imports, authentication, and admin |
+| **MCP server** | `mcp` SDK (Streamable HTTP), shared backend codebase | `backend/apps/assistant/mcp/` | Tools for creating temporary decks from a chat |
+| **Primary PostgreSQL** | PostgreSQL 17 + pgvector | `db/` | Data, embeddings, and all writes |
+| **PostgreSQL replica** | Asynchronous physical streaming replica | `db/replica-entrypoint.sh` | API GET reads |
+| **Redis** | Redis 7 | — | JWT denylist, login rate limiting, cache, and replica LSN markers |
+| **External services** | Claude API, Voyage AI, GitHub | — | Chat, embeddings, and remote vault sync |
 
 ### Backend: bounded context
 
-Ogni context è diviso in layer `models → repositories → services → api`.
+Each context is split into `models → repositories → services → api` layers.
 
-| Context | Possiede |
+| Context | Owns |
 |---|---|
-| `catalog` | Mazzi, card, parser del vault, import/sync, embedding, ricerca, segnalazioni |
-| `study` | Review (append-only), CardState, prossima card, mazzi provvisori, sessioni salvate |
-| `accounts` | Utenti, login, JWT in cookie httpOnly, refresh token ruotati |
-| `assistant` | Server MCP e chat dell'app (conversazioni, harness con la Claude API) |
-| `shared` | Router del DB (primary/replica), cache Redis, middleware di consistenza delle letture |
+| `catalog` | Decks, cards, vault parser, import/sync, embeddings, search, and reports |
+| `study` | Append-only reviews, CardState, next-card selection, temporary decks, and saved sessions |
+| `accounts` | Users, login, JWTs in HTTP-only cookies, and rotated refresh tokens |
+| `assistant` | MCP server and in-app chat, including conversations and the Claude API harness |
+| `shared` | Primary/replica DB router, Redis cache, and read-consistency middleware |
 
-### App Flutter: layer Pine
+### Flutter app: Pine layers
 
 ```
 lib/
-├── network/          service HTTP, DTO, interceptor (CSRF, sessione, sorgente di lettura)
-├── mappers/          DTO ⇄ entità di dominio
-├── model/            entità
-├── repositories/     interfacce + impl
-├── state_management/ cubit (auth, decks, study_session, chat, stats, …)
-├── ui/               pagine e widget
+├── network/          HTTP services, DTOs, interceptors (CSRF, session, read source)
+├── mappers/          DTO ⇄ domain entity mapping
+├── model/            domain entities
+├── repositories/     interfaces + implementations
+├── state_management/ cubits (auth, decks, study_session, chat, stats, …)
+├── ui/               pages and widgets
 ├── di/               dependency injection
-└── routers/          auto_route (app_router.gr.dart è generato)
+└── routers/          auto_route (app_router.gr.dart is generated)
 ```
 
 ---
 
 ## System design
 
-### Architettura
+### Architecture
 
 ```mermaid
 flowchart LR
@@ -94,33 +94,33 @@ flowchart LR
         BE["backend<br/>Django + DRF<br/>:8000"]
         MCP["mcp<br/>server MCP<br/>:8001"]
         PG[("db<br/>Postgres 17 primary<br/>+ pgvector")]
-        RP[("db-replica<br/>replica asincrona<br/>sola lettura")]
-        RD[("redis<br/>denylist · rate limit<br/>cache · LSN")]
+        RP[("db-replica<br/>asynchronous replica<br/>read-only")]
+        RD[("redis<br/>denylist · rate limiting<br/>cache · LSN")]
     end
 
-    subgraph Esterni
+    subgraph External services
         CL["Claude API"]
         VY["Voyage AI<br/>embedding"]
-        GH["GitHub<br/>repo del vault"]
+        GH["GitHub<br/>vault repository"]
     end
-    VAULT[/"Vault Obsidian<br/>(cartella locale)"/]
+    VAULT[/"Obsidian vault<br/>(local directory)"/]
 
     APP -- "HTTPS + cookie httpOnly" --> BE
     CD -- "Bearer MCP_TOKEN" --> MCP
-    BE -- "scritture, auth" --> PG
-    BE -- "GET (READ_REPLICA_MODE)" --> RP
+    BE -- "writes, auth" --> PG
+    BE -- "GET requests (READ_REPLICA_MODE)" --> RP
     PG -- "streaming WAL" --> RP
     BE --> RD
     MCP --> PG
     MCP --> RD
-    BE -- "chat: client MCP" --> MCP
+    BE -- "chat: MCP client" --> MCP
     BE -- "chat" --> CL
-    BE -- "embed_cards / ricerca" --> VY
-    BE -- "sync_vault (git clone)" --> GH
+    BE -- "embed_cards / search" --> VY
+    BE -- "sync_vault (Git clone)" --> GH
     VAULT -- "import_vault /vault (ro)" --> BE
 ```
 
-### Dipendenze tra context
+### Context dependencies
 
 ```mermaid
 flowchart TD
@@ -129,30 +129,30 @@ flowchart TD
     study --> catalog
     accounts
     shared
-    catalog -. "mai il contrario" .-x study
+    catalog -. "never the other way around" .-x study
 ```
 
-Le letture di `catalog` tollerano una replica in ritardo; quelle di `study` no: per questo esiste la modalità `lsn`.
+`catalog` reads can tolerate replication lag, while `study` reads cannot. This is why the `lsn` mode exists.
 
-### Modello dei dati
+### Data model
 
 ```mermaid
 erDiagram
-    DECK ||--o{ DECK : "sottomazzi"
-    DECK ||--o{ CARD : contiene
-    CARD ||--o{ REVIEW : riceve
-    USER ||--o{ REVIEW : scrive
-    REVIEW ||--o| REVIEW_UNDO : "annullata da"
+    DECK ||--o{ DECK : "subdecks"
+    DECK ||--o{ CARD : contains
+    CARD ||--o{ REVIEW : receives
+    USER ||--o{ REVIEW : submits
+    REVIEW ||--o| REVIEW_UNDO : "undone by"
     USER ||--o{ CARD_STATE : ""
-    CARD ||--o{ CARD_STATE : "proiezione delle review"
-    USER ||--o{ TEMPORARY_DECK : crea
-    TEMPORARY_DECK }o--o{ CARD : "elenco fisso"
-    USER ||--o{ SESSION : salva
-    SESSION ||--o{ REVIEW : raggruppa
-    CARD ||--o{ CARD_REPORT : segnalata
+    CARD ||--o{ CARD_STATE : "review projection"
+    USER ||--o{ TEMPORARY_DECK : creates
+    TEMPORARY_DECK }o--o{ CARD : "fixed list"
+    USER ||--o{ SESSION : saves
+    SESSION ||--o{ REVIEW : groups
+    CARD ||--o{ CARD_REPORT : reported
     USER ||--o{ CONVERSATION : chat
     CARD {
-        string key "hash nota+domanda, stabile tra gli import"
+        string key "note+question hash, stable across imports"
         string front
         string back
         string type "basic|multiline|cloze"
@@ -165,7 +165,7 @@ erDiagram
     }
 ```
 
-### Flusso di studio
+### Study flow
 
 ```mermaid
 sequenceDiagram
@@ -176,21 +176,21 @@ sequenceDiagram
     participant X as Redis
 
     A->>B: GET /api/next-card/?deck=dss
-    B->>X: ultimo LSN visto dall'utente
-    alt replica in pari
-        B->>R: SELECT prossima card
-    else replica indietro
-        B->>P: SELECT prossima card
+    B->>X: user's latest observed LSN
+    alt replica is caught up
+        B->>R: SELECT next card
+    else replica is behind
+        B->>P: SELECT next card
     end
     B-->>A: card (header X-Read-From)
     A->>B: POST /api/reviews/ {card_id, outcome}
-    B->>P: INSERT Review + UPDATE CardState (una transazione)
-    B->>X: salva LSN della scrittura
+    B->>P: INSERT Review + UPDATE CardState (one transaction)
+    B->>X: store write LSN
     B-->>A: 201
-    Note over A,B: si ripete fino a fine sessione,<br/>poi POST /api/sessions/ se l'utente la salva
+    Note over A,B: repeat until the session ends,<br/>then POST /api/sessions/ if the user saves it
 ```
 
-### Chat di ripasso (Claude + MCP)
+### Review chat (Claude + MCP)
 
 ```mermaid
 sequenceDiagram
@@ -200,31 +200,31 @@ sequenceDiagram
     participant M as Server MCP
 
     A->>B: POST /conversations/<id>/messages/ {"text"}
-    loop finché Claude usa tool
-        B->>C: messaggi + tool MCP
+    loop while Claude uses tools
+        B->>C: messages + MCP tools
         C-->>B: tool_use (find_topics / preview_temporary_deck)
-        B->>M: chiamata tool
-        M-->>B: risultato (es. draft_id)
+        B->>M: tool call
+        M-->>B: result (e.g. draft_id)
     end
-    B-->>A: risposta + azione in sospeso
+    B-->>A: response + pending action
     A->>B: POST /confirmation/ {"approve": true}
     B->>M: flashcards_create_temporary_deck(draft_id)
-    B-->>A: mazzo provvisorio creato
+    B-->>A: temporary deck created
 ```
 
-### Import / sync del vault
+### Vault import and sync
 
 ```mermaid
 flowchart LR
-    GH["GitHub<br/>repo vault"] -- "sync_vault<br/>clone parziale + date dai commit" --> CL["/var/lib/vault"]
-    LOC["Cartella locale<br/>(VAULT_PATH)"] -- "montata su /vault" --> IMP
-    CL --> IMP["import_vault<br/>parser → riconciliazione<br/>(1 transazione)"]
+    GH["GitHub<br/>vault repository"] -- "sync_vault<br/>partial clone + dates from commits" --> CL["/var/lib/vault"]
+    LOC["Local directory<br/>(VAULT_PATH)"] -- "mounted at /vault" --> IMP
+    CL --> IMP["import_vault<br/>parse → reconcile<br/>(1 transaction)"]
     IMP --> DB[("Postgres")]
     IMP -- "--embed / embed_cards" --> VY["Voyage AI"] --> DB
-    IMP -. ">20% archiviate → stop<br/>(salvo --force)" .-> STOP(("✋"))
+    IMP -. ">20% archived → stop<br/>(unless --force is used)" .-> STOP(("✋"))
 ```
 
-### Autenticazione
+### Authentication
 
 ```mermaid
 sequenceDiagram
@@ -232,60 +232,60 @@ sequenceDiagram
     participant B as Backend
     participant X as Redis
     A->>B: POST /api/auth/login/ {username, password}
-    B->>X: rate limit (5 errori/min → 429)
+    B->>X: rate limit (5 failures/min → 429)
     B-->>A: Set-Cookie fc_access (JWT 7gg) + fc_refresh (30gg)
-    A->>B: GET /api/auth/session/ (all'avvio)
-    B-->>A: 200 / rinnova col refresh (ruotato) / 401
+    A->>B: GET /api/auth/session/ (on startup)
+    B-->>A: 200 / renew with rotated refresh token / 401
     A->>B: POST /api/auth/logout/
-    B->>X: access in denylist, famiglia di refresh revocata
+    B->>X: denylist access token, revoke refresh-token family
 ```
 
-Le richieste che scrivono devono avere l'header `X-Requested-With` (protezione CSRF). Un refresh token già usato che ricompare revoca l'intera famiglia.
+Write requests must include the `X-Requested-With` header for CSRF protection. Reusing an already-consumed refresh token revokes the entire token family.
 
 ---
 
-## Requisiti
+## Requirements
 
-- **Docker** + Docker Compose
-- **Flutter SDK** (stabile, Dart 3) con Chrome, per l'app
-- Un **vault Obsidian** con note `Flashcard -> *.md` (cartella locale o repo GitHub)
-- Opzionali: chiave **Claude API** (chat), chiave **Voyage AI** (ricerca semantica), token **GitHub** (sync da repo), Node/`npx` (Claude Desktop)
+- **Docker** and Docker Compose
+- The stable **Flutter SDK** with Dart 3 and Chrome for the web app
+- An **Obsidian vault** containing `Flashcard -> *.md` notes, either locally or in a GitHub repository
+- Optional: a **Claude API** key for chat, a **Voyage AI** key for semantic search, a **GitHub** token for repository sync, and Node/`npx` for Claude Desktop
 
 ---
 
-## Configurazione (`.env`)
+## Configuration (`.env`)
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` non va mai committato. Variabili:
+Never commit `.env`. Available variables:
 
-| Variabile | Obbligatoria | Descrizione |
+| Variable | Required | Description |
 |---|---|---|
-| `DJANGO_SECRET_KEY` | ✅ | Chiave segreta Django |
-| `DJANGO_DEBUG` | | `true` in locale |
-| `DJANGO_ALLOWED_HOSTS` | ✅ | Es. `localhost,127.0.0.1` |
-| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | ✅ | Credenziali del DB |
-| `POSTGRES_REPLICATION_USER`, `POSTGRES_REPLICATION_PASSWORD` | ✅ | Utente della replica. Usati solo alla **prima** inizializzazione del volume: per cambiarli dopo serve `\password` in psql |
-| `READ_REPLICA_MODE` | | `off` (solo primary), `always` (GET dalla replica anche in ritardo), `lsn` (replica solo se in pari con l'utente) |
-| `REPLICA_APPLY_DELAY` | | Ritardo artificiale della replica (es. `5s`) per sperimentare il lag |
-| `VAULT_PATH` | ✅ | Percorso assoluto del vault locale, montato in sola lettura su `/vault` |
-| `JWT_SIGNING_KEY` | ✅ | Chiave lunga e casuale per firmare i JWT |
-| `AUTH_COOKIE_SECURE` | | `false` solo in locale su http; `true` in produzione |
-| `CORS_ALLOWED_ORIGINS` | ✅ | Origini dell'app web, es. `http://localhost:5173` |
-| `MCP_TOKEN` | per MCP | Token statico del server MCP: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` |
-| `MCP_USERNAME` | per MCP | Utente per cui agiscono i tool MCP |
-| `ANTHROPIC_API_KEY` | per la chat | Chiave Claude API (platform.claude.com) |
-| `ASSISTANT_MODEL`, `ASSISTANT_EFFORT` | | Modello ed effort della chat (default `claude-opus-5-5`, `medium`) |
-| `VOYAGE_API_KEY` | per la ricerca semantica | Senza, la ricerca per significato è disattivata |
-| `SEMANTIC_MIN_SIMILARITY` | | Soglia di similarità (default `0.45`) |
-| `VAULT_GIT_URL`, `VAULT_GIT_BRANCH`, `VAULT_GIT_TOKEN` | per `sync_vault` | Repo del vault; token fine-grained con solo "Contents: Read-only" |
-| `STUDY_TIME_ZONE` | | Fuso per statistiche e scadenze (default `Europe/Rome`) |
+| `DJANGO_SECRET_KEY` | ✅ | Django secret key |
+| `DJANGO_DEBUG` | | Set to `true` for local development |
+| `DJANGO_ALLOWED_HOSTS` | ✅ | For example, `localhost,127.0.0.1` |
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | ✅ | Database credentials |
+| `POSTGRES_REPLICATION_USER`, `POSTGRES_REPLICATION_PASSWORD` | ✅ | Replication user. Used only when the volume is initialized for the **first time**; changing them later requires `\password` in psql |
+| `READ_REPLICA_MODE` | | `off` (primary only), `always` (GET requests use the replica even when it is behind), or `lsn` (use the replica only when it has caught up with the user) |
+| `REPLICA_APPLY_DELAY` | | Artificial replica delay, such as `5s`, for experimenting with replication lag |
+| `VAULT_PATH` | ✅ | Absolute path to the local vault, mounted read-only at `/vault` |
+| `JWT_SIGNING_KEY` | ✅ | Long, random key used to sign JWTs |
+| `AUTH_COOKIE_SECURE` | | Use `false` only for local HTTP development and `true` in production |
+| `CORS_ALLOWED_ORIGINS` | ✅ | Web app origins, for example `http://localhost:5173` |
+| `MCP_TOKEN` | For MCP | Static MCP server token: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `MCP_USERNAME` | For MCP | User on whose behalf the MCP tools operate |
+| `ANTHROPIC_API_KEY` | For chat | Claude API key from platform.claude.com |
+| `ASSISTANT_MODEL`, `ASSISTANT_EFFORT` | | Chat model and effort level; defaults to `claude-opus-5-5` and `medium` |
+| `VOYAGE_API_KEY` | For semantic search | Semantic search is disabled when this is not set |
+| `SEMANTIC_MIN_SIMILARITY` | | Similarity threshold; defaults to `0.45` |
+| `VAULT_GIT_URL`, `VAULT_GIT_BRANCH`, `VAULT_GIT_TOKEN` | For `sync_vault` | Vault repository and a fine-grained token with only "Contents: Read-only" access |
+| `STUDY_TIME_ZONE` | | Time zone used for statistics and expirations; defaults to `Europe/Rome` |
 
-Avanzate (hanno un default sensato): `ACCESS_TOKEN_LIFETIME_SECONDS`, `REFRESH_TOKEN_LIFETIME_SECONDS`, `LOGIN_RATE_LIMIT`, `LOGIN_RATE_WINDOW_SECONDS`, `DJANGO_CONN_MAX_AGE`, `EMBEDDINGS_MODEL`, `MCP_PUBLIC_URL`, `MCP_INTERNAL_URL`, `MCP_ISSUER_URL`, `MCP_ALLOWED_HOSTS`, `VAULT_GIT_DIR`, `DJANGO_LOG_LEVEL`, `DJANGO_HSTS_SECONDS`, `DJANGO_HSTS_INCLUDE_SUBDOMAINS`. Per la produzione vedi [Deploy su VPS](#deploy-su-vps). `POSTGRES_HOST`, `POSTGRES_REPLICA_HOSTS` e `REDIS_URL` li imposta già il compose.
+Advanced variables with sensible defaults: `ACCESS_TOKEN_LIFETIME_SECONDS`, `REFRESH_TOKEN_LIFETIME_SECONDS`, `LOGIN_RATE_LIMIT`, `LOGIN_RATE_WINDOW_SECONDS`, `DJANGO_CONN_MAX_AGE`, `EMBEDDINGS_MODEL`, `MCP_PUBLIC_URL`, `MCP_INTERNAL_URL`, `MCP_ISSUER_URL`, `MCP_ALLOWED_HOSTS`, `VAULT_GIT_DIR`, `DJANGO_LOG_LEVEL`, `DJANGO_HSTS_SECONDS`, and `DJANGO_HSTS_INCLUDE_SUBDOMAINS`. See [VPS deployment](#vps-deployment) for production configuration. Docker Compose already sets `POSTGRES_HOST`, `POSTGRES_REPLICA_HOSTS`, and `REDIS_URL`.
 
-**App Flutter**: crea `flashcard/dart_defines.env` (ignorato da git):
+**Flutter app:** create `flashcard/dart_defines.env` (ignored by Git):
 
 ```
 API_BASE_URL=http://localhost:8000
@@ -293,75 +293,75 @@ API_BASE_URL=http://localhost:8000
 
 ---
 
-## Avvio in locale
+## Local setup
 
 ```bash
-# 1. Backend + DB + replica + Redis (migrazioni automatiche all'avvio)
+# 1. Backend + database + replica + Redis (migrations run automatically on startup)
 docker compose up -d --build
-curl localhost:8000/api/health/                 # 200 se il DB risponde
+curl localhost:8000/api/health/                 # 200 if the database is available
 
-# 2. Utente (nessuna registrazione: si creano da comando)
-docker compose exec backend python manage.py create_user giacomo           # chiede la password
-docker compose exec backend python manage.py create_user giacomo --admin   # anche accesso a /admin/
+# 2. User (there is no sign-up page; users are created from the command line)
+docker compose exec backend python manage.py create_user giacomo           # prompts for a password
+docker compose exec backend python manage.py create_user giacomo --admin   # also grants /admin/ access
 
-# 3. Card: dal vault locale...
+# 3. Cards: import from the local vault...
 docker compose exec backend python manage.py import_vault /vault
-#    ...oppure da GitHub (serve VAULT_GIT_*), con embedding
+#    ...or from GitHub (requires VAULT_GIT_*), including embeddings
 docker compose run --rm backend python manage.py sync_vault --embed
 
-# 4. App web (porta = quella in CORS_ALLOWED_ORIGINS)
+# 4. Web app (the port must match CORS_ALLOWED_ORIGINS)
 cd flashcard
 flutter pub get
 flutter run -d chrome --web-port 5173 --dart-define-from-file=dart_defines.env
 ```
 
-Se modifichi le route di `auto_route`, rigenera il codice: `dart run build_runner build --delete-conflicting-outputs`.
+After changing `auto_route` routes, regenerate the code with `dart run build_runner build --delete-conflicting-outputs`.
 
-Il codice del backend è montato come volume: gunicorn si ricarica a ogni modifica. Dopo aver cambiato il `.env`: `docker compose up -d backend`.
+The backend source is mounted as a volume, so Gunicorn reloads after every change. After changing `.env`, run `docker compose up -d backend`.
 
 ---
 
-## Uso
+## Usage
 
-- **Login** con l'utente creato; l'autologin usa i cookie e i suggerimenti di scadenza salvati nel browser.
-- **Mazzi** → scegli mazzo, sottomazzo o argomento (nota) e la lunghezza della sessione (10, 20, 50, tutte).
-- **Studio** — scorciatoie da tastiera su desktop:
+- **Log in** with the user you created. Automatic login uses cookies and expiration hints stored in the browser.
+- **Decks** → choose a deck, subdeck, or topic (note), then select a session length: 10, 20, 50, or all cards.
+- **Study** — desktop keyboard shortcuts:
 
-  | Tasto | Azione |
+  | Key | Action |
   |---|---|
-  | Spazio / Invio | Gira la card |
-  | → / K | Sapevo |
-  | ← / J | Non sapevo |
-  | Z / Backspace | Annulla l'ultima risposta |
-  | Esc | Chiude la sessione |
+  | Space / Enter | Flip the card |
+  | → / K | Knew it |
+  | ← / J | Didn't know it |
+  | Z / Backspace | Undo the latest answer |
+  | Esc | End the session |
 
-- **Riepilogo** → salva o scarta la sessione (le review restano comunque).
-- **Statistiche**, **Ricerca**, **Sessioni salvate**, **Segnalazioni**, **Chat di ripasso**, **Impostazioni** (sync del vault per gli staff, apertura delle note in Obsidian).
-- **Admin Django** su `http://localhost:8000/admin/` per gli utenti `--admin`.
+- **Summary** → save or discard the session; reviews are retained either way.
+- **Statistics**, **Search**, **Saved sessions**, **Reports**, **Review chat**, and **Settings**, including vault sync for staff users and opening notes in Obsidian.
+- **Django admin** is available at `http://localhost:8000/admin/` for users created with `--admin`.
 
-### Comandi di gestione
+### Management commands
 
-| Comando | Cosa fa |
+| Command | Description |
 |---|---|
-| `import_vault <percorso>` | Riconcilia il DB con il vault (idempotente, una transazione) |
-| `sync_vault [--embed] [--force]` | Aggiorna il clone GitHub e importa; si ferma se archivierebbe >20% delle card |
-| `embed_cards` | Calcola gli embedding mancanti |
-| `semantic_search "<testo>"` | Prova la ricerca semantica mostrando le similarità |
-| `create_user <nome> [--admin]` | Crea un utente |
-| `mcp_server --port 8001` | Avvia il server MCP (lo fa il servizio `mcp`) |
+| `import_vault <path>` | Reconciles the database with the vault in one idempotent transaction |
+| `sync_vault [--embed] [--force]` | Updates the GitHub clone and imports it; stops if more than 20% of cards would be archived |
+| `embed_cards` | Computes missing embeddings |
+| `semantic_search "<text>"` | Tests semantic search and displays similarity scores |
+| `create_user <name> [--admin]` | Creates a user |
+| `mcp_server --port 8001` | Starts the MCP server; the `mcp` service runs this command |
 
-Esegui con `docker compose exec backend python manage.py <comando>`.
+Run them with `docker compose exec backend python manage.py <command>`.
 
 ---
 
-## Server MCP e chat
+## MCP server and chat
 
 ```bash
 docker compose up -d mcp
 curl localhost:8001/health          # {"status":"ok"}
 ```
 
-Tool esposti su `http://localhost:8001/mcp`: `flashcards_find_topics`, `flashcards_preview_temporary_deck` (anteprima → `draft_id`), `flashcards_create_temporary_deck`, `flashcards_list_temporary_decks`. Servono `MCP_TOKEN` e `MCP_USERNAME`.
+Tools exposed at `http://localhost:8001/mcp`: `flashcards_find_topics`, `flashcards_preview_temporary_deck` (preview → `draft_id`), `flashcards_create_temporary_deck`, and `flashcards_list_temporary_decks`. They require `MCP_TOKEN` and `MCP_USERNAME`.
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -375,41 +375,41 @@ Tool esposti su `http://localhost:8001/mcp`: `flashcards_find_topics`, `flashcar
 }
 ```
 
-**Chat dell'app**: il backend fa da client MCP e chiama la Claude API; serve `ANTHROPIC_API_KEY` e il servizio `mcp` attivo.
+**In-app chat:** the backend acts as an MCP client and calls the Claude API. It requires `ANTHROPIC_API_KEY` and a running `mcp` service.
 
 ---
 
-## Replica Postgres
+## PostgreSQL replication
 
-Al primo avvio da volumi vuoti `db/init-primary.sh` crea utente e slot di replica, e `db/replica-entrypoint.sh` fa il base backup. Il backend sceglie da dove leggere con `READ_REPLICA_MODE`; in modalità `lsn` ogni utente è legato sempre alla stessa replica (rendezvous hashing) e legge da lì solo se ha già raggiunto la sua ultima posizione (read-your-writes e monotonic reads). Scritture, autenticazione e letture in transazione vanno sempre al primary. L'header di risposta `X-Read-From` dice chi ha risposto.
+On the first startup with empty volumes, `db/init-primary.sh` creates the replication user and slot, while `db/replica-entrypoint.sh` performs the base backup. The backend selects its read source according to `READ_REPLICA_MODE`. In `lsn` mode, rendezvous hashing consistently assigns each user to the same replica, which is used only after it has reached that user's latest observed position. This provides read-your-writes and monotonic-read guarantees. Writes, authentication, and reads inside transactions always use the primary. The `X-Read-From` response header identifies the server that handled the read.
 
 ```bash
-# Stato della replica e lag
+# Replica status and lag
 docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select client_addr, state, sent_lsn, replay_lsn, replay_lag from pg_stat_replication"'
-# Ricreare la replica da zero
+# Recreate the replica from scratch
 docker compose rm -sf db-replica && docker volume rm flashcardapp_pgreplica && docker compose up -d db-replica
-# Slot invalidato (wal_status = lost): ricrealo con la replica spenta
+# Invalidated slot (wal_status = lost): recreate it while the replica is stopped
 docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select pg_drop_replication_slot(\$\$flashcard_replica\$\$)" -c "select pg_create_physical_replication_slot(\$\$flashcard_replica\$\$)"'
 ```
 
-I limiti di memoria del compose (Postgres 256 MB, backend 192 MB, …) sono pensati per una VM da ~2 GB.
+The Compose memory limits—256 MB for PostgreSQL, 192 MB for the backend, and so on—are designed for a VM with approximately 2 GB of RAM.
 
 ---
 
-## Test
+## Tests
 
 ```bash
-docker compose run --rm backend pytest     # backend, su Postgres vero
-cd flashcard && flutter test               # app: repository, cubit, interceptor, widget
+docker compose run --rm backend pytest     # backend tests against a real PostgreSQL instance
+cd flashcard && flutter test               # app repositories, cubits, interceptors, and widgets
 ```
 
 ---
 
-## Build e deploy
+## Build and deployment
 
-### Deploy su VPS
+### VPS deployment
 
-Il backend va sulla VPS IONOS (`ssh vps`, utente `jackwhite`), dove girano già **Nginx Proxy Manager** (porte 80/443, pannello su `:81`), un altro progetto Django, n8n e Netdata. Per questo lo stack di produzione **non espone porte sull'host** (niente conflitti con la porta 8000 dell'altro progetto): backend e MCP entrano nella rete Docker di Nginx Proxy Manager (`PROXY_NETWORK`) con i nomi `flashcard-backend` e `flashcard-mcp`, e NPM gestisce HTTPS e certificati. L'app Flutter va su Vercel.
+The backend runs on an IONOS VPS (`ssh vps`, user `jackwhite`) that already hosts **Nginx Proxy Manager** on ports 80 and 443, with its admin panel on `:81`, as well as another Django project, n8n, and Netdata. The production stack therefore **does not publish any host ports**, avoiding a conflict with the other project's port 8000. The backend and MCP services join the Nginx Proxy Manager Docker network configured by `PROXY_NETWORK` under the names `flashcard-backend` and `flashcard-mcp`; NPM handles HTTPS and certificates. The Flutter app is deployed to Vercel.
 
 ```mermaid
 flowchart LR
@@ -419,36 +419,36 @@ flowchart LR
         N["Nginx Proxy Manager<br/>:80 / :443"]
         N -- "flashcards-api.giacomobianco.com" --> B["flashcard-backend:8000"]
         N -- "flashcards-mcp.giacomobianco.com" --> M["flashcard-mcp:8001"]
-        N -. "già esistenti" .-> O["dev · n8n · stats"]
+        N -. "existing services" .-> O["dev · n8n · stats"]
         B --> P[("db")] --> R[("db-replica")]
         B --> X[("redis")]
         CR["cron"] -- "03:30 backup.sh" --> P
-        CR -- "ogni ora sync-vault.sh" --> B
+        CR -- "hourly sync-vault.sh" --> B
     end
-    CR -. "rclone" .-> S3["Storage remoto"]
+    CR -. "rclone" .-> S3["Remote storage"]
 ```
 
-| File | Cosa fa |
+| File | Description |
 |---|---|
-| `docker-compose.prod.yml` | Stack di produzione: codice nell'immagine, senza dipendenze di test, `restart: unless-stopped`, log ruotati, nessuna porta pubblicata |
-| `deploy/deploy.sh` | `git pull` + build + riavvio dei servizi |
-| `deploy/install-cron.sh` | Una tantum, con sudo: cron di backup notturno e sync orario del vault |
-| `deploy/backup.sh` | `pg_dump` compresso in `BACKUP_DIR`, conserva `BACKUP_KEEP_DAYS` giorni, copia su `BACKUP_RCLONE_REMOTE` se impostato |
-| `deploy/restore.sh <file>` | Ripristina un backup (chiede conferma, ferma backend e mcp) |
+| `docker-compose.prod.yml` | Production stack: code baked into the image, no test dependencies, `restart: unless-stopped`, rotated logs, and no published ports |
+| `deploy/deploy.sh` | Runs `git pull`, builds the images, and restarts the services |
+| `deploy/install-cron.sh` | One-time, sudo-enabled setup for nightly backups and hourly vault sync |
+| `deploy/backup.sh` | Creates a compressed `pg_dump` in `BACKUP_DIR`, retains it for `BACKUP_KEEP_DAYS`, and copies it to `BACKUP_RCLONE_REMOTE` when configured |
+| `deploy/restore.sh <file>` | Restores a backup after confirmation, stopping the backend and MCP services |
 | `deploy/sync-vault.sh` | `sync_vault --embed` |
 
-**1. DNS** — record A verso `217.154.117.202` per `flashcards-api.giacomobianco.com` e `flashcards-mcp.giacomobianco.com`; su Vercel il dominio `flashcards.giacomobianco.com`. App e API devono stare sotto `giacomobianco.com`: i cookie sono `SameSite=Lax` e il browser non li manda tra siti diversi.
+**1. DNS** — create A records pointing to `217.154.117.202` for `flashcards-api.giacomobianco.com` and `flashcards-mcp.giacomobianco.com`; configure `flashcards.giacomobianco.com` in Vercel. The app and API must both be under `giacomobianco.com`, because the cookies use `SameSite=Lax` and browsers do not send them across different sites.
 
-**2. Rete di Nginx Proxy Manager** — sulla VPS:
+**2. Nginx Proxy Manager network** — on the VPS:
 
 ```bash
-docker network ls                                   # trova la rete del container di NPM
+docker network ls                                   # find the NPM container network
 docker inspect <container-npm> --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
 ```
 
-Metti quel nome in `PROXY_NETWORK` nel `.env`.
+Set `PROXY_NETWORK` in `.env` to that network name.
 
-**3. Installazione**
+**3. Installation**
 
 ```bash
 ssh vps
@@ -460,96 +460,96 @@ deploy/sync-vault.sh
 sudo deploy/install-cron.sh
 ```
 
-**4. Proxy host in Nginx Proxy Manager** (`http://217.154.117.202:81`), con SSL Let's Encrypt, "Force SSL" e "HTTP/2":
+**4. Proxy hosts in Nginx Proxy Manager** (`http://217.154.117.202:81`) with a Let's Encrypt certificate, "Force SSL," and "HTTP/2":
 
-| Domain | Forward | Note |
+| Domain | Forward to | Notes |
 |---|---|---|
-| `flashcards-api.giacomobianco.com` | `http` · `flashcard-backend` · `8000` | Advanced: `proxy_read_timeout 1800s; proxy_send_timeout 1800s;` (chat e sync lunghi) |
+| `flashcards-api.giacomobianco.com` | `http` · `flashcard-backend` · `8000` | Advanced: `proxy_read_timeout 1800s; proxy_send_timeout 1800s;` for long-running chat and sync requests |
 | `flashcards-mcp.giacomobianco.com` | `http` · `flashcard-mcp` · `8001` | Advanced: `proxy_buffering off; proxy_read_timeout 600s;` |
 
-**`.env` di produzione**, oltre ai valori della tabella di [Configurazione](#configurazione-env):
+**Production `.env`**, in addition to the values listed under [Configuration](#configuration-env):
 
-| Variabile | Valore |
+| Variable | Value |
 |---|---|
-| `DJANGO_SECRET_KEY`, `JWT_SIGNING_KEY`, `POSTGRES_PASSWORD`, `POSTGRES_REPLICATION_PASSWORD`, `MCP_TOKEN` | Nuovi e casuali: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `DJANGO_SECRET_KEY`, `JWT_SIGNING_KEY`, `POSTGRES_PASSWORD`, `POSTGRES_REPLICATION_PASSWORD`, `MCP_TOKEN` | Generate new random values with `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `DJANGO_ALLOWED_HOSTS` | `flashcards-api.giacomobianco.com,flashcard-backend,localhost` |
-| `DJANGO_CSRF_TRUSTED_ORIGINS` | `https://flashcards-api.giacomobianco.com` (serve all'admin) |
-| `DJANGO_ADMIN_URL` | Un percorso non ovvio, es. `gestione-x7k2/` (default `admin/`) |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | `https://flashcards-api.giacomobianco.com` (required by the admin) |
+| `DJANGO_ADMIN_URL` | A non-obvious path such as `management-x7k2/`; defaults to `admin/` |
 | `CORS_ALLOWED_ORIGINS` | `https://flashcards.giacomobianco.com` |
-| `PROXY_NETWORK` | La rete di Nginx Proxy Manager (passo 2) |
+| `PROXY_NETWORK` | The Nginx Proxy Manager network from step 2 |
 | `MCP_PUBLIC_URL` | `https://flashcards-mcp.giacomobianco.com/mcp` |
 | `MCP_ISSUER_URL` | `https://flashcards-api.giacomobianco.com` |
 | `MCP_ALLOWED_HOSTS` | `flashcards-mcp.giacomobianco.com,mcp:*` |
-| `VAULT_GIT_URL`, `VAULT_GIT_TOKEN` | Repo del vault |
-| `BACKUP_RCLONE_REMOTE` | Es. `b2:flashcard-backup` dopo `rclone config` (vuoto = solo backup locali) |
+| `VAULT_GIT_URL`, `VAULT_GIT_TOKEN` | Vault repository |
+| `BACKUP_RCLONE_REMOTE` | For example, `b2:flashcard-backup` after `rclone config`; leave empty for local-only backups |
 
-`DJANGO_DEBUG=false` e `AUTH_COOKIE_SECURE=true` li forza il compose di produzione; `VAULT_PATH` non serve. Postgres e Redis restano nella rete interna dello stack: non toccano il Postgres dell'altro progetto.
+The production Compose file enforces `DJANGO_DEBUG=false` and `AUTH_COOKIE_SECURE=true`; `VAULT_PATH` is not needed. PostgreSQL and Redis remain on the stack's internal network and do not interact with the other project's PostgreSQL instance.
 
-**Memoria** — i limiti dello stack sommano ~1 GB (Postgres 256 MB + replica 256 MB + backend 192 MB + mcp 160 MB + Redis 64 MB), da affiancare agli altri servizi della VPS: controlla con Netdata. Se serve spazio, si può togliere `db-replica` con `READ_REPLICA_MODE=off`.
+**Memory** — the stack limits total approximately 1 GB: PostgreSQL 256 MB, replica 256 MB, backend 192 MB, MCP 160 MB, and Redis 64 MB. This runs alongside the VPS's other services, so monitor usage with Netdata. If necessary, remove `db-replica` and set `READ_REPLICA_MODE=off`.
 
-**Operazioni**
+**Operations**
 
 ```bash
-deploy/deploy.sh                                                    # aggiornare dopo un push
-docker compose -f docker-compose.prod.yml logs -f backend           # log
-deploy/backup.sh                                                    # backup manuale
+deploy/deploy.sh                                                    # update after a push
+docker compose -f docker-compose.prod.yml logs -f backend           # logs
+deploy/backup.sh                                                    # manual backup
 deploy/restore.sh /var/backups/flashcardapp/flashcards-<data>.sql.gz
 ```
 
-Claude Desktop in produzione: nella configurazione MCP usa `https://flashcards-mcp.giacomobianco.com/mcp`. Netdata (`stats.giacomobianco.com`) monitora già la VPS; per l'uptime basta un controllo su `https://flashcards-api.giacomobianco.com/api/health/`.
+For Claude Desktop in production, use `https://flashcards-mcp.giacomobianco.com/mcp` in the MCP configuration. Netdata at `stats.giacomobianco.com` already monitors the VPS; uptime monitoring only needs to check `https://flashcards-api.giacomobianco.com/api/health/`.
 
-### App web
+### Web app
 
 ```bash
 cd flashcard
-tool/build_web.sh https://flashcards-api.giacomobianco.com   # build ottimizzata in build/web
-tool/subset_fonts.sh                          # solo se cambiano i font
-cd build/web && npx vercel --prod             # vercel.json già incluso (fallback SPA, service worker)
+tool/build_web.sh https://flashcards-api.giacomobianco.com   # optimized build in build/web
+tool/subset_fonts.sh                          # only when fonts change
+cd build/web && npx vercel --prod             # vercel.json included (SPA fallback, service worker)
 ```
 
-`build_web.sh` serve CanvasKit dal dominio dell'app e carica i font di KaTeX dopo il primo frame; `web/index.html` anticipa le prime chiamate API mentre Flutter si avvia.
+`build_web.sh` serves CanvasKit from the app's own domain and loads KaTeX fonts after the first frame. While Flutter starts, `web/index.html` preconnects the app for its initial API calls.
 
 ---
 
-## Riferimento API
+## API reference
 
-Tutte autenticate dal cookie, tranne health e login.
+All endpoints use cookie authentication except health and login.
 
-| Metodo | Percorso | Cosa fa |
+| Method | Path | Description |
 |---|---|---|
-| GET | `/api/health/` | Stato del backend e del DB |
-| POST | `/api/auth/login/` | Imposta i cookie; 429 dopo 5 errori al minuto |
-| GET | `/api/auth/session/` | Autologin: conferma o rinnova; 401 senza sessione, 409 se un'altra scheda sta rinnovando |
-| POST | `/api/auth/logout/` | Revoca i token e cancella i cookie |
-| GET | `/api/decks/` | Mazzi con sottomazzi, card attive e mai viste |
-| PATCH | `/api/decks/<slug>/` | `{"name"}`: rinomina (l'import non lo sovrascrive) |
-| GET | `/api/decks/<slug>/notes/` | Argomenti del mazzo |
-| GET | `/api/next-card/?deck=&note=&temporary_deck=&exclude=` | Una card; `{"card": null}` se finite |
+| GET | `/api/health/` | Backend and database status |
+| POST | `/api/auth/login/` | Sets authentication cookies; returns 429 after five failures per minute |
+| GET | `/api/auth/session/` | Automatic login: confirms or renews the session; returns 401 without a session or 409 if another tab is renewing it |
+| POST | `/api/auth/logout/` | Revokes tokens and deletes cookies |
+| GET | `/api/decks/` | Decks with their subdecks, active cards, and unseen-card counts |
+| PATCH | `/api/decks/<slug>/` | `{"name"}` renames a deck; imports do not overwrite the custom name |
+| GET | `/api/decks/<slug>/notes/` | Topics in a deck |
+| GET | `/api/next-card/?deck=&note=&temporary_deck=&exclude=` | Returns one card, or `{"card": null}` when none remain |
 | POST | `/api/reviews/` | `{"card_id", "outcome": "knew"\|"didnt_know"}` |
-| POST | `/api/reviews/<id>/undo/` | Annulla una review (409 se già annullata) |
-| GET · POST | `/api/sessions/` | Sessioni salvate; salvarne una |
-| GET | `/api/stats/` | Statistiche |
-| GET | `/api/cards/search/?q=&deck=` | Ricerca testuale (max 50) |
+| POST | `/api/reviews/<id>/undo/` | Undoes a review; returns 409 if it was already undone |
+| GET · POST | `/api/sessions/` | Lists saved sessions or saves a new one |
+| GET | `/api/stats/` | Statistics |
+| GET | `/api/cards/search/?q=&deck=` | Full-text search, limited to 50 results |
 | POST | `/api/cards/<id>/reports/` | `{"reason": "wrong_answer"\|"bad_format"\|"other", "comment"}` |
-| GET · POST | `/api/reports/` · `/api/reports/<id>/resolve/` | Segnalazioni aperte; risolverne una |
-| POST | `/api/vault/sync/` | Solo staff: sync da GitHub + embedding (200, 207 se gli embedding falliscono) |
-| GET · POST | `/api/conversations/` | Chat: elenco / nuova |
-| GET · DELETE | `/api/conversations/<id>/` | Una chat |
-| POST | `/api/conversations/<id>/messages/` | `{"text"}`: un turno; 409 se attende conferma |
+| GET · POST | `/api/reports/` · `/api/reports/<id>/resolve/` | Lists open reports or resolves one |
+| POST | `/api/vault/sync/` | Staff only: syncs from GitHub and computes embeddings; returns 200, or 207 if embedding generation fails |
+| GET · POST | `/api/conversations/` | Lists chats or starts a new one |
+| GET · DELETE | `/api/conversations/<id>/` | Retrieves or deletes a chat |
+| POST | `/api/conversations/<id>/messages/` | `{"text"}` sends one turn; returns 409 while confirmation is pending |
 | POST | `/api/conversations/<id>/confirmation/` | `{"approve": bool}` |
 
 ---
 
-## Glossario
+## Glossary
 
-- **Vault** — il vault Obsidian, unica fonte del contenuto; l'app non modifica mai le card.
-- **Nota** — file `Flashcard -> <titolo>.md`; le altre note sono ignorate.
-- **Mazzo / Sottomazzo** — dal tag `flashcards/<mazzo>[/<sottomazzo>]`; studiare un mazzo include i sottomazzi.
-- **Chiave della card** — hash di titolo nota + domanda normalizzata (per le cloze: riga + indice della lacuna); identifica la card tra un import e l'altro.
-- **Card archiviata** — sparita dal vault: non proposta, ma conserva lo storico; torna attiva se ricompare.
-- **Review** — una risposta, append-only. L'**annullamento** è un evento di compensazione, non una cancellazione.
-- **CardState** — proiezione delle review valide (ultima vista, conteggi), aggiornata nella stessa transazione.
-- **Prossima card** — prima le mai viste, poi la meno recente, a parità casuale; una alla volta.
-- **Mazzo provvisorio** — elenco fisso di card scelte con filtri, scade a mezzanotte, non compare nelle statistiche.
-- **Sessione** — una serie di card dalla scelta al riepilogo; salvata solo se l'utente conferma.
-- **Embedding** — vettore di titolo + fronte + retro per la ricerca semantica; si ricalcola con `embed_cards` dopo l'import.
+- **Vault** — the Obsidian vault and single source of truth for content; the app never modifies cards.
+- **Note** — a `Flashcard -> <title>.md` file; all other notes are ignored.
+- **Deck / Subdeck** — derived from the `flashcards/<deck>[/<subdeck>]` tag; studying a deck includes its subdecks.
+- **Card key** — a hash of the note title and normalized question—or the line and blank index for cloze cards—that identifies a card across imports.
+- **Archived card** — a card removed from the vault. It is no longer shown for study, but its history is retained, and it becomes active again if it reappears.
+- **Review** — an append-only answer. An **undo** is a compensating event, not a deletion.
+- **CardState** — a projection of valid reviews, including last-seen time and counts, updated in the same transaction.
+- **Next card** — unseen cards first, followed by the least recently viewed; ties are broken randomly, and cards are returned one at a time.
+- **Temporary deck** — a fixed list of filtered cards that expires at midnight and is excluded from statistics.
+- **Session** — a sequence of cards from deck selection through the summary; saved only when the user confirms it.
+- **Embedding** — a vector generated from a card's title, front, and back for semantic search; recompute it with `embed_cards` after an import.
