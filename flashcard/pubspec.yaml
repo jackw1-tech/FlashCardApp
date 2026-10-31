@@ -1,0 +1,61 @@
+name: flashcard
+description: A new Flutter project called Flashcard.
+
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.9
+  pine: ^1.0.4
+  flutter_bloc: ^9.1.1
+  provider: ^6.1.5
+  json_annotation: ^4.12.0
+  uuid: ^4.6.0
+  auto_route: ^11.1.0
+  intl: ^0.20.3
+  http: ^1.6.0
+  flutter_markdown_plus: ^1.0.12
+  flutter_math_fork: ^0.7.4
+  markdown: ^7.3.1
+  collection: ^1.19.1
+  shared_preferences: ^2.5.3
+  web: ^1.1.1
+  url_launcher: ^6.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.5.2
+  auto_route_generator: ^10.5.0
+
+flutter:
+  uses-material-design: true
+
+  fonts:
+    - family: CormorantGaramond
+      fonts:
+        - asset: assets/fonts/CormorantGaramond-500.ttf
+          weight: 500
+        - asset: assets/fonts/CormorantGaramond-700.ttf
+          weight: 700
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-400.ttf
+          weight: 400
+        - asset: assets/fonts/Inter-500.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-600.ttf
+          weight: 600
+        - asset: assets/fonts/Inter-700.ttf
+          weight: 700
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-400.ttf
+          weight: 400
+

@@ -1,0 +1,1 @@
+enum DbNode { primary, replica }

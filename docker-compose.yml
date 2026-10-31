@@ -1,0 +1,116 @@
+services:
+  db:
+    build: ./db
+    command: postgres -c shared_buffers=64MB -c max_connections=20 -c work_mem=4MB -c max_slot_wal_keep_size=256MB
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD}
+      POSTGRES_REPLICATION_SLOT: flashcard_replica
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init-primary.sh:/docker-entrypoint-initdb.d/10-replica.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 256m
+
+  db-replica:
+    build: ./db
+    user: postgres
+    entrypoint: ["/usr/local/bin/replica-entrypoint.sh"]
+    environment:
+      PRIMARY_HOST: db
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD}
+      POSTGRES_REPLICATION_SLOT: flashcard_replica
+      REPLICA_APPLY_DELAY: ${REPLICA_APPLY_DELAY:-0}
+    volumes:
+      - pgreplica:/var/lib/postgresql/data
+      - ./db/replica-entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 256m
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 48mb --maxmemory-policy volatile-lru --appendonly yes --appendfsync everysec
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 64m
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        REQUIREMENTS: requirements-dev.txt
+    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi --worker-class gthread --workers 1 --threads 4 --timeout 1800 --bind 0.0.0.0:8000 --access-logfile - --reload"
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_REPLICA_HOSTS: db-replica
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./backend:/app
+      - ${VAULT_PATH}:/vault:ro
+      - vaultrepo:/var/lib/vault
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    mem_limit: 192m
+
+  mcp:
+    build:
+      context: ./backend
+      args:
+        REQUIREMENTS: requirements-dev.txt
+    command: python manage.py mcp_server --port 8001
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    mem_limit: 160m
+
+volumes:
+  pgdata:
+  redisdata:
+  vaultrepo:
+  pgreplica:
