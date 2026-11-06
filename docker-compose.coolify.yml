@@ -114,6 +114,16 @@ services:
       retries: 3
     mem_limit: 160m
 
+  frontend:
+    build:
+      context: ./flashcard
+      args:
+        API_BASE_URL: https://flashcards-api.giacomobianco.com
+    image: flashcardapp-frontend:prod
+    restart: unless-stopped
+    logging: *logging
+    mem_limit: 64m
+
 volumes:
   pgdata:
   pgreplica:
