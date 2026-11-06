@@ -3,11 +3,12 @@ set -euo pipefail
 
 API_BASE_URL="${1:?serve l indirizzo della API, es. https://api.tuodominio.it}"
 
-flutter build web --release --no-web-resources-cdn --dart-define=API_BASE_URL="$API_BASE_URL"
+flutter build web --release --wasm --no-web-resources-cdn --dart-define=API_BASE_URL="$API_BASE_URL"
 
 python3 - <<'PY'
 import hashlib
 import json
+from pathlib import Path
 
 manifest_path = "build/web/assets/FontManifest.json"
 families = json.load(open(manifest_path))
@@ -26,8 +27,12 @@ for family in families:
 json.dump(initial, open(manifest_path, "w"))
 json.dump(deferred, open("build/web/assets/FontManifest.deferred.json", "w"))
 
-bundle = open("build/web/main.dart.js", "rb").read()
-build_id = hashlib.sha256(bundle).hexdigest()[:12]
+compiled_app = b"".join(
+    path.read_bytes()
+    for path in sorted(Path("build/web").glob("main.dart.*"))
+    if path.suffix in {".js", ".mjs", ".wasm"}
+)
+build_id = hashlib.sha256(compiled_app).hexdigest()[:12]
 sw_path = "build/web/sw.js"
 sw = open(sw_path).read().replace("__BUILD_ID__", build_id)
 open(sw_path, "w").write(sw)

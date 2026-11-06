@@ -17,13 +17,39 @@ import 'package:flutter/material.dart';
 
 part 'app_router.gr.dart';
 
+Widget _appRouteTransition(
+  BuildContext context,
+  Animation<double> animation,
+  Animation<double> secondaryAnimation,
+  Widget child,
+) {
+  if (MediaQuery.disableAnimationsOf(context)) return child;
+  final curved = CurvedAnimation(
+    parent: animation,
+    curve: Curves.easeOutCubic,
+    reverseCurve: Curves.easeInCubic,
+  );
+  return RepaintBoundary(
+    child: FadeTransition(
+      opacity: Tween(begin: 0.82, end: 1.0).animate(curved),
+      child: SlideTransition(
+        position: Tween(
+          begin: const Offset(0.06, 0),
+          end: Offset.zero,
+        ).animate(curved),
+        child: child,
+      ),
+    ),
+  );
+}
+
 @AutoRouterConfig()
 class AppRouter extends RootStackRouter {
   AppRouter({super.navigatorKey});
 
   @override
   RouteType get defaultRouteType => RouteType.custom(
-    transitionsBuilder: TransitionsBuilders.slideLeftWithFade,
+    transitionsBuilder: _appRouteTransition,
     duration: const Duration(milliseconds: 260),
     reverseDuration: const Duration(milliseconds: 220),
     enablePredictiveBackGesture: true,

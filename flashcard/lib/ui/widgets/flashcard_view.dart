@@ -61,7 +61,11 @@ class _FlashcardViewState extends State<FlashcardView>
     vsync: this,
     duration: const Duration(milliseconds: Dimensions.flipDurationMs),
   );
-  double _dragX = 0;
+  late final Animation<double> _flipProgress = CurvedAnimation(
+    parent: _flip,
+    curve: Curves.easeInOutCubic,
+  );
+  final ValueNotifier<double> _dragX = ValueNotifier(0);
   bool _dragging = false;
 
   bool _pastThreshold = false;
@@ -74,7 +78,7 @@ class _FlashcardViewState extends State<FlashcardView>
   void didUpdateWidget(FlashcardView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.interactive && !oldWidget.interactive) {
-      setState(() => _dragX = 0);
+      _dragX.value = 0;
     }
   }
 
@@ -83,6 +87,7 @@ class _FlashcardViewState extends State<FlashcardView>
     if (widget.controller?._attached == this) {
       widget.controller!._attached = null;
     }
+    _dragX.dispose();
     _flip.dispose();
     super.dispose();
   }
@@ -102,17 +107,15 @@ class _FlashcardViewState extends State<FlashcardView>
 
   bool _answer(ReviewOutcome outcome) {
     if (!_canSwipe) return false;
-    setState(() {
-      _dragging = false;
-      _dragX = (outcome == ReviewOutcome.knew ? 1 : -1) * _width * 1.4;
-    });
+    setState(() => _dragging = false);
+    _dragX.value = (outcome == ReviewOutcome.knew ? 1 : -1) * _width * 1.4;
     widget.onSwipe(outcome);
     return true;
   }
 
   void _onDragUpdate(double delta, double width) {
-    setState(() => _dragX += delta);
-    final past = _dragX.abs() >= width * Dimensions.swipeThreshold;
+    _dragX.value += delta;
+    final past = _dragX.value.abs() >= width * Dimensions.swipeThreshold;
     if (past != _pastThreshold) {
       _pastThreshold = past;
       if (past) HapticFeedback.mediumImpact();
@@ -122,94 +125,102 @@ class _FlashcardViewState extends State<FlashcardView>
   void _onDragEnd(double width) {
     _pastThreshold = false;
     final threshold = width * Dimensions.swipeThreshold;
-    setState(() {
-      _dragging = false;
-      if (_dragX.abs() < threshold) {
-        _dragX = 0;
-        return;
-      }
-      final outcome = _dragX > 0 ? ReviewOutcome.knew : ReviewOutcome.didntKnow;
-      _dragX = _dragX.sign * width * 1.4;
-      widget.onSwipe(outcome);
-    });
+    setState(() => _dragging = false);
+    if (_dragX.value.abs() < threshold) {
+      _dragX.value = 0;
+      return;
+    }
+    final outcome = _dragX.value > 0
+        ? ReviewOutcome.knew
+        : ReviewOutcome.didntKnow;
+    _dragX.value = _dragX.value.sign * width * 1.4;
+    widget.onSwipe(outcome);
   }
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final width = _width = constraints.maxWidth;
-      final progress = (_dragX / (width * Dimensions.swipeThreshold)).clamp(
-        -1.0,
-        1.0,
+      final faces = <Widget>[
+        RepaintBoundary(child: _face(context, back: false)),
+        Transform(
+          alignment: Alignment.center,
+          transform: Matrix4.rotationY(math.pi),
+          child: RepaintBoundary(child: _face(context, back: true)),
+        ),
+      ];
+      final flipCard = AnimatedBuilder(
+        animation: _flipProgress,
+        builder: (context, _) {
+          final angle = _flipProgress.value * math.pi;
+          final showBack = angle > math.pi / 2;
+          return Transform(
+            alignment: Alignment.center,
+            transform: Matrix4.identity()
+              ..setEntry(3, 2, 0.0012)
+              ..rotateY(angle),
+            child: IndexedStack(
+              index: showBack ? 1 : 0,
+              sizing: StackFit.expand,
+              children: faces,
+            ),
+          );
+        },
       );
-      return Semantics(
-        button: true,
-        label: widget.revealed
-            ? 'Flashcard, risposta mostrata'
-            : 'Flashcard, tocca per mostrare la risposta',
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: GestureDetector(
-            onTap: _toggle,
-            onHorizontalDragStart: _canSwipe
-                ? (_) => setState(() => _dragging = true)
-                : null,
-            onHorizontalDragUpdate: _canSwipe
-                ? (details) => _onDragUpdate(details.delta.dx, width)
-                : null,
-            onHorizontalDragEnd: _canSwipe ? (_) => _onDragEnd(width) : null,
-            child: AnimatedContainer(
-              duration: _dragging
-                  ? Duration.zero
-                  : const Duration(milliseconds: Dimensions.swipeDurationMs),
-              curve: Curves.easeOut,
-              transformAlignment: Alignment.bottomCenter,
-              transform: Matrix4.translationValues(_dragX, 0, 0)
-                ..rotateZ(_dragX / width * 0.25),
-              child: AnimatedBuilder(
-                animation: _flip,
-                builder: (context, _) {
-                  final angle = _flip.value * math.pi;
-                  final showBack = angle > math.pi / 2;
-                  final face = showBack
-                      ? Transform(
-                          alignment: Alignment.center,
-                          transform: Matrix4.rotationY(math.pi),
-                          child: _face(
-                            context,
-                            back: true,
-                            swipeProgress: progress,
-                          ),
-                        )
-                      : _face(context, back: false, swipeProgress: progress);
-                  return Transform(
-                    alignment: Alignment.center,
-                    transform: Matrix4.identity()
-                      ..setEntry(3, 2, 0.0012)
-                      ..rotateY(angle),
-                    child: face,
-                  );
-                },
+      return ValueListenableBuilder<double>(
+        valueListenable: _dragX,
+        child: flipCard,
+        builder: (context, dragX, flipCard) {
+          final progress = (dragX / (width * Dimensions.swipeThreshold)).clamp(
+            -1.0,
+            1.0,
+          );
+          return Semantics(
+            button: true,
+            label: widget.revealed
+                ? 'Flashcard, risposta mostrata'
+                : 'Flashcard, tocca per mostrare la risposta',
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                onTap: _toggle,
+                onHorizontalDragStart: _canSwipe
+                    ? (_) => setState(() => _dragging = true)
+                    : null,
+                onHorizontalDragUpdate: _canSwipe
+                    ? (details) => _onDragUpdate(details.delta.dx, width)
+                    : null,
+                onHorizontalDragEnd: _canSwipe
+                    ? (_) => _onDragEnd(width)
+                    : null,
+                child: AnimatedContainer(
+                  duration: _dragging
+                      ? Duration.zero
+                      : const Duration(
+                          milliseconds: Dimensions.swipeDurationMs,
+                        ),
+                  curve: Curves.easeOutCubic,
+                  transformAlignment: Alignment.bottomCenter,
+                  transform: Matrix4.translationValues(dragX, 0, 0)
+                    ..rotateZ(dragX / width * 0.25),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      flipCard!,
+                      if (progress != 0) _swipeFeedback(progress),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
+          );
+        },
       );
     },
   );
 
-  Widget _face(
-    BuildContext context, {
-    required bool back,
-    required double swipeProgress,
-  }) {
+  Widget _face(BuildContext context, {required bool back}) {
     final colors = context.colors;
-    final swipeColor = swipeProgress > 0 ? colors.knew : colors.didntKnow;
-    final borderColor = Color.lerp(
-      colors.hairline,
-      swipeColor,
-      swipeProgress.abs(),
-    )!;
 
     return Container(
       width: double.infinity,
@@ -217,10 +228,7 @@ class _FlashcardViewState extends State<FlashcardView>
       decoration: BoxDecoration(
         color: colors.flashcard,
         borderRadius: BorderRadius.circular(Dimensions.radiusXl),
-        border: Border.all(
-          color: borderColor,
-          width: swipeProgress == 0 ? 1 : 2,
-        ),
+        border: Border.all(color: colors.hairline),
         boxShadow: const [
           BoxShadow(
             color: Color(0x14141413),
@@ -229,95 +237,109 @@ class _FlashcardViewState extends State<FlashcardView>
           ),
         ],
       ),
-      child: Stack(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(Dimensions.paddingLarge),
-            child: Column(
+      child: Padding(
+        padding: const EdgeInsets.all(Dimensions.paddingLarge),
+        child: Column(
+          children: [
+            Row(
               children: [
-                Row(
-                  children: [
-                    Text(
-                      back ? 'RISPOSTA' : 'DOMANDA',
-                      style: AppTextStyles.captionUppercase.copyWith(
-                        color: back ? colors.primary : colors.muted,
-                      ),
-                    ),
-                    OutcomeDots(widget.recentOutcomes),
-                    const SizedBox(width: Dimensions.paddingSmall),
-                    Expanded(
-                      child: Text(
-                        widget.caption,
-                        textAlign: TextAlign.end,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppTextStyles.caption.copyWith(
-                          color: colors.muted,
-                        ),
-                      ),
-                    ),
-                  ],
+                Text(
+                  back ? 'RISPOSTA' : 'DOMANDA',
+                  style: AppTextStyles.captionUppercase.copyWith(
+                    color: back ? colors.primary : colors.muted,
+                  ),
                 ),
+                OutcomeDots(widget.recentOutcomes),
+                const SizedBox(width: Dimensions.paddingSmall),
                 Expanded(
-                  child: Center(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: Dimensions.paddingMedium,
-                      ),
-                      child: CardMarkdown(
-                        back ? widget.back : widget.front,
-                        centered: true,
-                        style: back
-                            ? AppTextStyles.bodyMd.copyWith(
-                                fontSize: 18 * widget.textScale,
-                                color: colors.body,
-                              )
-                            : AppTextStyles.flashcard.copyWith(
-                                fontSize:
-                                    AppTextStyles.flashcard.fontSize! *
-                                    widget.textScale,
-                                color: colors.ink,
-                              ),
-                      ),
-                    ),
-                  ),
-                ),
-                AnimatedSwitcher(
-                  duration: const Duration(
-                    milliseconds: Dimensions.microAnimationMs,
-                  ),
-                  child: Row(
-                    key: ValueKey(back),
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        back ? Icons.swipe_rounded : Icons.touch_app_outlined,
-                        size: 17,
-                        color: colors.muted,
-                      ),
-                      const SizedBox(width: Dimensions.spaceXxs),
-                      Flexible(
-                        child: Text(
-                          switch ((back, widget.keyboardHints)) {
-                            (true, false) =>
-                              'Destra se sapevi · sinistra se no',
-                            (true, true) => 'Trascina la card o usa ← →',
-                            (false, false) => 'Tocca per girare',
-                            (false, true) => 'Tocca o premi Spazio per girare',
-                          },
-                          textAlign: TextAlign.center,
-                          style: AppTextStyles.caption.copyWith(
-                            color: colors.muted,
-                          ),
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    widget.caption,
+                    textAlign: TextAlign.end,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.caption.copyWith(color: colors.muted),
                   ),
                 ),
               ],
             ),
+            Expanded(
+              child: Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: Dimensions.paddingMedium,
+                  ),
+                  child: CardMarkdown(
+                    back ? widget.back : widget.front,
+                    centered: true,
+                    style: back
+                        ? AppTextStyles.bodyMd.copyWith(
+                            fontSize: 18 * widget.textScale,
+                            color: colors.body,
+                          )
+                        : AppTextStyles.flashcard.copyWith(
+                            fontSize:
+                                AppTextStyles.flashcard.fontSize! *
+                                widget.textScale,
+                            color: colors.ink,
+                          ),
+                  ),
+                ),
+              ),
+            ),
+            AnimatedSwitcher(
+              duration: const Duration(
+                milliseconds: Dimensions.microAnimationMs,
+              ),
+              child: Row(
+                key: ValueKey(back),
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    back ? Icons.swipe_rounded : Icons.touch_app_outlined,
+                    size: 17,
+                    color: colors.muted,
+                  ),
+                  const SizedBox(width: Dimensions.spaceXxs),
+                  Flexible(
+                    child: Text(
+                      switch ((back, widget.keyboardHints)) {
+                        (true, false) => 'Destra se sapevi · sinistra se no',
+                        (true, true) => 'Trascina la card o usa ← →',
+                        (false, false) => 'Tocca per girare',
+                        (false, true) => 'Tocca o premi Spazio per girare',
+                      },
+                      textAlign: TextAlign.center,
+                      style: AppTextStyles.caption.copyWith(
+                        color: colors.muted,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _swipeFeedback(double progress) {
+    final colors = context.colors;
+    final color = progress > 0 ? colors.knew : colors.didntKnow;
+    return IgnorePointer(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(Dimensions.radiusXl),
+              border: Border.all(
+                color: color.withValues(alpha: progress.abs()),
+                width: 2,
+              ),
+            ),
           ),
-          if (swipeProgress != 0) _stamp(swipeProgress, swipeColor),
+          _stamp(progress, color),
         ],
       ),
     );

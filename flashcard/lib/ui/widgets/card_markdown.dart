@@ -8,6 +8,9 @@ import 'package:flutter/services.dart';
 Future<void>? _loading;
 bool _loaded = false;
 
+@visibleForTesting
+int debugCardMarkdownBuildCount = 0;
+
 Future<void> preloadCardMarkdown() => _loading ??= Future.wait([
   impl.loadLibrary(),
   loadDeferredFonts(rootBundle),
@@ -46,6 +49,10 @@ class CardMarkdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    assert(() {
+      debugCardMarkdownBuildCount++;
+      return true;
+    }());
     if (_loaded) {
       return impl.CardMarkdownImpl(data, style: style, centered: centered);
     }

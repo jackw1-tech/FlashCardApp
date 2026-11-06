@@ -112,8 +112,8 @@ class StudyPage extends StatelessWidget {
         BlocListener<StudySessionCubit, StudySessionState>(
           listenWhen: (_, state) =>
               state is ShowingCardStudySessionState && state.notice != null,
-          listener: (context, state) => ScaffoldMessenger.of(context)
-              .showSnackBar(
+          listener: (context, state) =>
+              ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(
                     (state as ShowingCardStudySessionState).notice!,
@@ -284,16 +284,20 @@ class _Session extends StatelessWidget {
                       duration: const Duration(
                         milliseconds: Dimensions.swipeDurationMs,
                       ),
-                      transitionBuilder: (child, animation) => FadeTransition(
-                        opacity: animation,
-                        child: ScaleTransition(
-                          scale: Tween(
-                            begin: 0.94,
-                            end: 1.0,
-                          ).animate(animation),
-                          child: child,
-                        ),
-                      ),
+                      transitionBuilder: (child, animation) {
+                        final curved = CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                          reverseCurve: Curves.easeInCubic,
+                        );
+                        return FadeTransition(
+                          opacity: curved,
+                          child: ScaleTransition(
+                            scale: Tween(begin: 0.97, end: 1.0).animate(curved),
+                            child: child,
+                          ),
+                        );
+                      },
                       child: FlashcardView(
                         controller: flashcard,
                         key: ValueKey('${state.card.id}-${state.position}'),
@@ -356,7 +360,8 @@ class _Session extends StatelessWidget {
                             label: 'Non sapevo',
                             color: context.colors.didntKnow,
                             onPressed: canAnswer
-                                ? () => cubit.answer(ReviewOutcome.didntKnow)
+                                ? () =>
+                                      flashcard.answer(ReviewOutcome.didntKnow)
                                 : null,
                           ),
                           AnswerButton(
@@ -364,7 +369,7 @@ class _Session extends StatelessWidget {
                             label: 'Sapevo',
                             color: context.colors.knew,
                             onPressed: canAnswer
-                                ? () => cubit.answer(ReviewOutcome.knew)
+                                ? () => flashcard.answer(ReviewOutcome.knew)
                                 : null,
                           ),
                         ],

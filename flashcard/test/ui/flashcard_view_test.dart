@@ -1,5 +1,6 @@
 import 'package:flashcard/model/entities/review_outcome.dart';
 import 'package:flashcard/theme/app_text_styles.dart';
+import 'package:flashcard/theme/dimensions.dart';
 import 'package:flashcard/ui/widgets/flashcard_view.dart';
 import 'package:flashcard/ui/widgets/outcome_dots.dart';
 import 'package:flashcard/ui/widgets/card_markdown.dart';
@@ -10,6 +11,8 @@ Future<void> pump(
   WidgetTester tester, {
   double textScale = 1.0,
   List<ReviewOutcome> history = const [],
+  FlashcardController? controller,
+  bool revealed = false,
 }) => tester.pumpWidget(
   MaterialApp(
     home: Scaffold(
@@ -17,10 +20,11 @@ Future<void> pump(
         front: 'Domanda',
         back: 'Risposta',
         caption: 'Nota',
-        revealed: false,
+        revealed: revealed,
         interactive: true,
         textScale: textScale,
         recentOutcomes: history,
+        controller: controller,
         onReveal: () {},
         onSwipe: (_) {},
       ),
@@ -70,4 +74,56 @@ void main() {
     );
     expect(dots, findsNWidgets(3));
   });
+
+  testWidgets('il flip non ricostruisce il contenuto Markdown a ogni frame', (
+    tester,
+  ) async {
+    final controller = FlashcardController();
+    await pump(tester, controller: controller);
+
+    debugCardMarkdownBuildCount = 0;
+    addTearDown(() => debugCardMarkdownBuildCount = 0);
+
+    controller.flip();
+    for (
+      var elapsed = Duration.zero;
+      elapsed < const Duration(milliseconds: Dimensions.flipDurationMs);
+      elapsed += const Duration(milliseconds: 16)
+    ) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+
+    expect(debugCardMarkdownBuildCount, 0);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SelectableText &&
+            widget.textSpan?.toPlainText() == 'Risposta',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'il trascinamento non ricostruisce il Markdown a ogni movimento',
+    (tester) async {
+      await pump(tester, revealed: true);
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byType(FlashcardView)),
+      );
+      await gesture.moveBy(const Offset(20, 0));
+      await tester.pump();
+      debugCardMarkdownBuildCount = 0;
+      addTearDown(() => debugCardMarkdownBuildCount = 0);
+
+      for (var i = 0; i < 10; i++) {
+        await gesture.moveBy(const Offset(5, 0));
+        await tester.pump();
+      }
+
+      expect(debugCardMarkdownBuildCount, 0);
+      await gesture.cancel();
+    },
+  );
 }
